@@ -97,7 +97,7 @@ Paradero también habla [MCP](https://modelcontextprotocol.io), el protocolo abi
 | `get_route` | Paradas, horario y buses en vía de una ruta |
 | `feed_status` | Si TransMilenio está publicando en vivo |
 
-Son las mismas funciones y la misma caché que usa la app, solo de lectura y sin cuenta. Las respuestas dicen si cada hora es en vivo o del horario, y el asistente recibe la instrucción de decirlo. Las coordenadas se redondean a una cuadra antes de consultar.
+Son las mismas funciones y reglas de caché que usa la app, solo de lectura y sin cuenta. Las respuestas dicen si cada hora es en vivo o del horario, y el asistente recibe la instrucción de decirlo. Las coordenadas se redondean a una cuadra antes de consultar.
 
 ## Lo que sigue
 

@@ -43,8 +43,8 @@ export function mcpServer(): McpServer {
       title: "Nearby stops",
       description: "Stations and stops within about 700 m of a point in Bogotá, nearest first, with the routes that serve each one.",
       inputSchema: {
-        lat: z.number().describe("Latitude in Bogotá"),
-        lon: z.number().describe("Longitude in Bogotá"),
+        lat: z.number().describe("Latitude in Bogotá, between 3.5 and 5.5"),
+        lon: z.number().describe("Longitude in Bogotá, between -75 and -73"),
       },
       annotations: READ_ONLY,
     },
@@ -59,7 +59,7 @@ export function mcpServer(): McpServer {
     {
       title: "Search routes and stops",
       description: "Routes and stops by code or name, the way riders write them: K635, B10, Calle 72, Portal Suba.",
-      inputSchema: { query: z.string().trim().refine(validQuery, "query must be 2 to 80 characters.") },
+      inputSchema: { query: z.string().trim().refine(validQuery, "query must be 2 to 80 characters.").describe("2 to 80 characters") },
       annotations: READ_ONLY,
     },
     ({ query }) => answer(() => search(query)),

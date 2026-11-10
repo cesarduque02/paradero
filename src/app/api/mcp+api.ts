@@ -20,7 +20,7 @@ export async function POST(request: Request) {
   if (Array.isArray(message)) return rpcError(400, -32600, "Send one message per request; batches are not supported.");
 
   const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-  await mcpServer().connect(transport);
+  await mcpServer(new URL(request.url).origin).connect(transport);
   return transport.handleRequest(request, { parsedBody: message });
 }
 

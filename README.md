@@ -98,7 +98,7 @@ Expo SDK 58 · Expo Router con pestañas nativas · Liquid Glass · MapLibre · 
 
 ### ¿Cómo llego?
 
-"Estoy en Unicentro, voy para la Calle 72 # 10-34". Paradero lee la dirección como se escribe en Bogotá. Busca en el horario oficial completo, viaje por viaje, y responde con hasta tres opciones. Cada bus dice si es TransMilenio o SITP, dónde subirse y bajarse, y si su hora es en vivo o del horario. Usa RAPTOR, el mismo algoritmo de OpenTripPlanner, verificado contra un segundo algoritmo exacto en 2.000 viajes. Responde en menos de 0,2 s en el 95 % de los casos. Nunca adivina un lugar: si una dirección es ambigua o no existe, lo dice y pregunta. El diseño, las pruebas y los límites están en [`docs/PLANNER.md`](docs/PLANNER.md).
+"Estoy en Unicentro, voy para la Calle 72 # 10-34". Paradero lee la dirección como se escribe en Bogotá. Busca en el horario oficial completo, viaje por viaje, y responde con hasta tres opciones. Cada bus dice si es TransMilenio o SITP, dónde subirse y bajarse, y si su hora es en vivo o del horario. Usa RAPTOR, el mismo algoritmo de OpenTripPlanner, verificado contra un segundo algoritmo exacto en 2.000 viajes. Responde en menos de 0,05 s en el 95 % de los casos, y es tan liviano que podría correr dentro del celular. Nunca adivina un lugar: si una dirección es ambigua o no existe, lo dice y pregunta. El diseño, las pruebas y los límites están en [`docs/PLANNER.md`](docs/PLANNER.md).
 
 ### Desde tu asistente de IA
 

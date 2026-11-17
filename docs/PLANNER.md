@@ -26,6 +26,14 @@ Everything in `src/transit` is pure: no network, no clock. The same code runs in
 
 - **Timetable, exact to 2 seconds.** TransMilenio builds every trip of a stop pattern by scaling one base profile. So a trip is stored as `(start, scale)` over its pattern's offsets. The builder checks every trip against the official stop times and gives a trip its own profile if it would be off by more than 5 s anywhere. On the current feed the worst error is 2 s. The whole timetable takes 1.2 MB gzipped, against 6.9 MB stored stop by stop.
 - **FIFO groups.** RAPTOR needs trips of a route that never overtake each other. Trips are split into groups where that holds: 2,748 groups for 1,556 patterns. Offsets never decrease along a pattern, so checking the first and last stop is enough.
+- **Invariants, checked at build time.** `networkProblems()` in `src/transit/network.ts` checks every rule the planner relies on. It takes 8 ms on the real network, and `build-network.ts` refuses to write a file that breaks any of them:
+  - offsets never go back and scales are never negative;
+  - groups are FIFO;
+  - the arrays have matching lengths;
+  - times fit in 32 bits;
+  - yesterday's trips past midnight still come before today's first trip in the day's list.
+
+  A strange future GTFS then stops the deploy, and the previous version keeps serving. Without the check, the planner would quietly miss trips.
 - **Calendars.** `calendar.txt` plus `calendar_dates.txt`, so holidays and special days are right. Trips of yesterday's service that run past midnight are part of today.
 - **Footpaths.** These connect stops up to 300 m apart, at 1.25 m/s with a detour factor of 1.3, and a transfer takes at least 60 s. Getting in or out of a TransMilenio station adds 180 s (bridge, ramp, turnstile). Platforms of the same station connect with no such cost.
 - **Systems.** Each route keeps its agency: troncal, dual, alimentador, zonal urbano/complementario/especial, TransMiCable. That is how every ride says whether it is TransMilenio or SITP.
@@ -52,6 +60,32 @@ Each stop keeps two labels per round: arriving on a vehicle and arriving on foot
 - A walk to the destination could follow another walk.
 
 `npm run check` runs 200 such trips when the data is built.
+
+### Fast enough to run on the phone
+
+The scan is written for Hermes, the app's JavaScript engine, which has no JIT:
+- typed-array flags instead of a `Set` or `Map` per round;
+- no objects in the inner loop;
+- boarding is tried only at stops the previous round improved;
+- groups with no trips that day are skipped;
+- the binary search is skipped when no earlier trip can exist;
+- each trip's start and scale are precomputed for the day;
+- `offset × scale` is rounded with integers.
+
+Each shortcut is explained next to the code. Together they make the planner about 6× faster, with byte-for-byte identical answers:
+
+| Where | Before | Now |
+| --- | --- | --- |
+| Server (Node), `options()` median / p95 | 112 / 247 ms | 17 / 40 ms |
+| Phone (Moto g71 5G, release build, Hermes), median / p95 at peak | 1,610 ms / 2.8 s | 258 ms / 0.51 s |
+
+**How the identical answers were checked:**
+- the same `raptor()` and `options()` output on thousands of real trips, accessible-only trips included;
+- the same timetables for every day of the year;
+- the Connection Scan oracle on 2,000 of 2,000 trips;
+- a fuzzer over synthetic networks, about 5 million queries, with zero differences.
+
+This is the work of [@Levi4tan-6](https://github.com/Levi4tan-6), who measured it on the phone and in Hermes.
 
 ## From journeys to options
 
@@ -133,12 +167,12 @@ Approximate means the rider is asked to confirm. Being conservative is the point
 
 | When | Answered | p50 | p95 | Fastest option, median |
 | --- | --- | --- | --- | --- |
-| Weekday 7:30 | 99.7 % | 79 ms | 188 ms | 66 min |
-| Weekday 13:00 | 99.9 % | 80 ms | 169 ms | 66 min |
-| Sunday 10:00 | 99.8 % | 81 ms | 174 ms | 64 min |
-| Weekday 22:45 | 98.6 % | 67 ms | 134 ms | 53 min |
+| Weekday 7:30 | 99.7 % | 21 ms | 41 ms | 66 min |
+| Weekday 13:00 | 99.9 % | 22 ms | 41 ms | 66 min |
+| Sunday 10:00 | 99.8 % | 23 ms | 41 ms | 64 min |
+| Weekday 22:45 | 98.6 % | 17 ms | 29 ms | 53 min |
 
-Late at night the unanswered trips are those with no service left. The server answers them with tomorrow's first option. Building the day's timetable takes about 7 ms, and decoding the network about 12–40 ms per server instance.
+Late at night the unanswered trips are those with no service left. The server answers them with tomorrow's first option. Building the day's timetable takes 7–20 ms, and decoding the network about 25 ms per server instance.
 
 ## Compared with OpenTripPlanner 2
 
@@ -150,7 +184,7 @@ Late at night the unanswered trips are those with no service left. The server an
 | Walking | Street network from OSM | Straight line × 1.3, plus station entry and exit time |
 | Addresses | None built in (needs Pelias, Photon or Nominatim) | Bogotá nomenclature parser and geocoder, with ambiguity and confirmation |
 | Answers for AI assistants | None | MCP tools with confirmation and honesty rules |
-| Infrastructure | JVM server, several GB of RAM, graph build | The existing serverless deploy; 2.3 MB of static data |
+| Infrastructure | JVM server, several GB of RAM, graph build | The existing serverless deploy; 2.3 MB of static data. Fast enough to run on the phone itself (258 ms median on a mid-range Android) |
 
 **When to switch:**
 - if street-accurate walking matters (hills, rivers, highways that straight lines cross);

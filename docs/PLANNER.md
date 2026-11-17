@@ -214,7 +214,9 @@ ORACLE_QUERIES=2000 npm run test:planner
 npm run bench:planner
 ```
 
-`npm run deploy:api` builds the data before exporting, so each deploy plans on the newest published timetable. The server reads the data from `PARADERO_NETWORK_URL`, by default `https://paradero.expo.app/network`, never from the request's Host (the local server only in development).
+`npm run deploy:api` builds the data before exporting, so each deploy plans on the newest published timetable.
+
+The public Overpass servers are often overloaded, so `build-places.ts` tries the main server, then a mirror, twice each. If none answers, it keeps the `places.json` already published (`PARADERO_NETWORK_URL`): streets barely change from one deploy to the next, and the log says how old that file is. Only when there is neither a fresh nor a published file does the deploy stop. The timetable always comes fresh from TransMilenio. The server reads the data from `PARADERO_NETWORK_URL`, by default `https://paradero.expo.app/network`, never from the request's Host (the local server only in development).
 
 A `depart_at`/`at` without an offset is Bogotá time. A bare date is refused.
 

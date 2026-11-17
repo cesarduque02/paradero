@@ -14,7 +14,10 @@ import { join } from "node:path";
 import { fold, parseStreet, streetKey } from "../src/transit/address.ts";
 import { PLACES_VERSION, type PlacesFile } from "../src/transit/places.ts";
 
-const OVERPASS = "https://overpass-api.de/api/interpreter";
+/** The main public Overpass server and a community mirror with the same data, tried in this order. OVERPASS_URLS overrides them. */
+const OVERPASS = (process.env.OVERPASS_URLS ?? "https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter").split(",");
+/** The places file already deployed. Streets barely change, so it stands in when no Overpass server answers. */
+const PUBLISHED = `${process.env.PARADERO_NETWORK_URL ?? "https://paradero.expo.app/network"}/places.json`;
 const BBOX = "(4.44,-74.25,4.84,-73.98)";
 const OUT = "public/network/places.json";
 const SIMPLIFY_M = 5;
@@ -94,22 +97,33 @@ type Element = {
 async function overpass(query: string, cache: string): Promise<Element[]> {
   const dir = arg("osm-dir");
   if (dir && existsSync(join(dir, cache))) return (JSON.parse(readFileSync(join(dir, cache), "utf8")) as { elements: Element[] }).elements;
-  // The public Overpass servers are busy at times: a deploy should wait a little, not fail at the first 502
-  let res: Response | null = null;
-  for (const wait of [0, 15_000, 45_000]) {
-    if (wait) {
-      console.log(`Overpass answered ${res?.status}; trying again in ${wait / 1000} s`);
-      await new Promise((done) => setTimeout(done, wait));
+  // The public Overpass servers are busy at times: wait a little, then try a mirror, before giving up
+  let text: string | null = null;
+  const failures: string[] = [];
+  for (const server of OVERPASS) {
+    for (const wait of [0, 15_000]) {
+      if (wait) await new Promise((done) => setTimeout(done, wait));
+      try {
+        const res = await fetch(server, {
+          method: "POST",
+          headers: { "User-Agent": "paradero-build (github.com/croma-labs/paradero)", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ data: query }),
+          signal: AbortSignal.timeout(300_000),
+        });
+        if (res.ok) {
+          text = await res.text();
+          break;
+        }
+        failures.push(`${new URL(server).host} ${res.status}`);
+        if (res.status !== 429 && res.status < 500) break;
+      } catch (error) {
+        failures.push(`${new URL(server).host} ${error instanceof Error ? error.message : error}`);
+      }
+      console.log(`Overpass failed (${failures.at(-1)})`);
     }
-    res = await fetch(OVERPASS, {
-      method: "POST",
-      headers: { "User-Agent": "paradero-build (github.com/croma-labs/paradero)", "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ data: query }),
-    });
-    if (res.ok || (res.status !== 429 && res.status < 500)) break;
+    if (text) break;
   }
-  if (!res || !res.ok) throw new Error(`Overpass answered ${res?.status}`);
-  const text = await res.text();
+  if (!text) throw new Error(`No Overpass server answered: ${failures.join(", ")}`);
   if (dir) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, cache), text);
@@ -147,9 +161,33 @@ function simplify(points: { lat: number; lon: number }[], tolerance: number): { 
   return points.filter((_, i) => keep[i]);
 }
 
+/** When OpenStreetMap cannot be reached, deploy with the places already published rather than none. */
+async function keepPublished(reason: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(PUBLISHED, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) return false;
+    const file = (await res.json()) as PlacesFile;
+    if (file.version !== PLACES_VERSION || file.streets.key.length < 1000) return false;
+    mkdirSync("public/network", { recursive: true });
+    writeFileSync(arg("out") ?? OUT, JSON.stringify(file));
+    console.warn(`OpenStreetMap could not be reached (${reason instanceof Error ? reason.message : reason}).`);
+    console.warn(`Kept the published places from ${file.asOf} (${PUBLISHED}): ${file.streets.key.length} street lines, ${file.places.id.length} places.`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
-  const streets = await overpass(STREETS_QUERY, "streets-bogota.json");
-  const pois = await overpass(PLACES_QUERY, "pois.json");
+  let streets: Element[];
+  let pois: Element[];
+  try {
+    streets = await overpass(STREETS_QUERY, "streets-bogota.json");
+    pois = await overpass(PLACES_QUERY, "pois.json");
+  } catch (error) {
+    if (await keepPublished(error)) return;
+    throw error;
+  }
 
   const file: PlacesFile = {
     version: PLACES_VERSION,

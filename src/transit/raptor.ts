@@ -265,6 +265,10 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
             const j = dayTrips[trip - 1];
             if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[trip - 1] < ready) continue;
             hi = trip - 1;
+          } else {
+            // Not on a trip yet: when the group's last trip has already left, no trip is left today
+            const j = dayTrips[tripCount - 1];
+            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[tripCount - 1] < ready) continue;
           }
           while (lo < hi) {
             const mid = (lo + hi) >> 1;

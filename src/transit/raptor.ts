@@ -69,45 +69,45 @@ export interface Journey {
 
 /** Which trips run on a service day, given the active services today and yesterday. */
 export function dayTimetable(net: Network, today: Set<number>, yesterday: Set<number>): DayTimetable {
-  const trips: Int32Array[] = [];
-  const shift: Int32Array[] = [];
-  for (let g = 0; g < net.groupPattern.length; g++) {
+  // Flags per service instead of a Set lookup per trip (~180,000 trips a day), and arrays sized up front
+  const services = net.services.id.length;
+  const runsToday = new Uint8Array(services);
+  const ranYesterday = new Uint8Array(services);
+  for (const s of today) if (s >= 0 && s < services) runsToday[s] = 1;
+  for (const s of yesterday) if (s >= 0 && s < services) ranYesterday[s] = 1;
+  const groups = net.groupPattern.length;
+  const trips: Int32Array[] = new Array(groups);
+  const shift: Int32Array[] = new Array(groups);
+  for (let g = 0; g < groups; g++) {
     const service = net.groupService[g];
+    const count = net.groupStart[g].length;
+    const lastOffset = net.patternOffsets[net.groupPattern[g]][net.patternStops[net.groupPattern[g]].length - 1];
     const start = net.groupStart[g];
-    const last = net.patternStops[net.groupPattern[g]].length - 1;
-    const t: number[] = [];
-    const s: number[] = [];
-    for (let k = 0; k < start.length; k++) {
-      if (yesterday.has(service[k]) && departure(net, g, k, last) >= 86_400) {
-        t.push(k);
-        s.push(86_400);
+    const scale = net.groupScale[g];
+    let n = 0;
+    for (let k = 0; k < count; k++) {
+      if (ranYesterday[service[k]] && start[k] + Math.round((lastOffset * scale[k]) / 10_000) >= 86_400) n++;
+      if (runsToday[service[k]]) n++;
+    }
+    const t = new Int32Array(n);
+    const s = new Int32Array(n);
+    let i = 0;
+    for (let k = 0; k < count; k++) {
+      if (ranYesterday[service[k]] && start[k] + Math.round((lastOffset * scale[k]) / 10_000) >= 86_400) {
+        t[i] = k;
+        s[i++] = 86_400;
       }
     }
-    for (let k = 0; k < start.length; k++) {
-      if (today.has(service[k])) {
-        t.push(k);
-        s.push(0);
-      }
+    for (let k = 0; k < count; k++) {
+      if (runsToday[service[k]]) t[i++] = k;
     }
-    trips.push(Int32Array.from(t));
-    shift.push(Int32Array.from(s));
+    trips[g] = t;
+    shift[g] = s;
   }
   return { trips, shift };
 }
 
 const at = (net: Network, day: DayTimetable, g: number, j: number, pos: number) => departure(net, g, day.trips[g][j], pos) - day.shift[g][j];
-
-/** First trip index in the day's list that leaves `pos` at or after `time`, or -1. */
-function earliestTrip(net: Network, day: DayTimetable, g: number, pos: number, time: number): number {
-  let lo = 0;
-  let hi = day.trips[g].length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (at(net, day, g, mid, pos) < time) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo < day.trips[g].length ? lo : -1;
-}
 
 /**
  * Each stop keeps two labels per round: the earliest arrival on a vehicle and the earliest arrival
@@ -118,7 +118,9 @@ function earliestTrip(net: Network, day: DayTimetable, g: number, pos: number, t
 export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
   const n = net.stopCount;
   const rounds = Math.min(q.maxRides ?? MAX_RIDES, HARD_LIMIT);
-  const usable = (s: number) => !q.accessibleOnly || net.accessible[s] === 1;
+  const accessibleOnly = q.accessibleOnly === true;
+  const accessible = net.accessible;
+  const usable = (s: number) => !accessibleOnly || accessible[s] === 1;
 
   const byRide: Float64Array[] = [];
   const byWalk: Float64Array[] = [];
@@ -140,91 +142,163 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
   const egress = new Map<number, number>();
   for (const e of q.destination) if (usable(e.stop)) egress.set(e.stop, Math.min(e.walk, egress.get(e.stop) ?? Infinity));
 
-  let marked = new Set<number>();
+  // Sets of stops as a flag per stop plus a list in insertion order: same order a Set would iterate in,
+  // without allocating one per round (Hermes has no JIT to remove that cost).
+  const markedFlag = new Uint8Array(n);
+  let marked = new Int32Array(n);
+  let markedCount = 0;
+  const improvedFlag = new Uint8Array(n);
+  const improved = new Int32Array(n);
+  const walkedFlag = new Uint8Array(n);
+  const walked = new Int32Array(n);
+  let spare = new Int32Array(n);
+
   for (const o of q.origin) {
     if (!usable(o.stop)) continue;
     const t = q.departAt + o.walk;
     if (t < byWalk[0][o.stop]) {
       byWalk[0][o.stop] = t;
       bestWalk[o.stop] = t;
-      marked.add(o.stop);
+      if (!markedFlag[o.stop]) {
+        markedFlag[o.stop] = 1;
+        marked[markedCount++] = o.stop;
+      }
     }
   }
 
+  // Groups to scan in a round, with the earliest marked position on each (-1: not queued)
+  const groupCount = net.groupPattern.length;
+  const queuePos = new Int32Array(groupCount).fill(-1);
+  const queue = new Int32Array(groupCount);
+
   const journeys: Journey[] = [];
   let target = Infinity;
-  /** When a rider who reached `s` in round k can board, and whether that is after getting off a vehicle. */
-  const ready = (k: number, s: number) => {
-    const walk = byWalk[k][s];
-    const ride = byRide[k][s] + SAME_STOP_TRANSFER_S;
-    return walk <= ride ? { time: walk, off: 0 } : { time: ride, off: 1 };
-  };
 
-  for (let k = 1; k <= rounds && marked.size; k++) {
-    byRide[k].set(byRide[k - 1]);
-    byWalk[k].set(byWalk[k - 1]);
+  for (let k = 1; k <= rounds && markedCount; k++) {
+    const rideK = byRide[k];
+    const walkK = byWalk[k];
+    const ridePrev = byRide[k - 1];
+    const walkPrev = byWalk[k - 1];
+    rideK.set(ridePrev);
+    walkK.set(walkPrev);
+    const pGroup = p.rideGroup[k];
+    const pTrip = p.rideTrip[k];
+    const pFrom = p.rideFrom[k];
+    const pFromPos = p.rideFromPos[k];
+    const pToPos = p.rideToPos[k];
+    const pOff = p.rideBoardedOff[k];
+    const pWalk = p.walkFrom[k];
 
-    // Groups to scan, from the earliest marked position on each
-    const queue = new Map<number, number>();
-    for (const s of marked) {
-      const list = net.stopGroups[s];
+    let queued = 0;
+    for (let m = 0; m < markedCount; m++) {
+      const list = net.stopGroups[marked[m]];
       for (let i = 0; i < list.length; i += 2) {
         const g = list[i];
         const pos = list[i + 1];
-        const seen = queue.get(g);
-        if (seen === undefined || pos < seen) queue.set(g, pos);
+        const seen = queuePos[g];
+        if (seen === -1) {
+          queuePos[g] = pos;
+          queue[queued++] = g;
+        } else if (pos < seen) queuePos[g] = pos;
       }
     }
 
-    const improved = new Set<number>();
-    for (const [g, start] of queue) {
-      const stops = net.patternStops[net.groupPattern[g]];
+    let improvedCount = 0;
+    for (let qi = 0; qi < queued; qi++) {
+      const g = queue[qi];
+      const start = queuePos[g];
+      queuePos[g] = -1;
+      const pattern = net.groupPattern[g];
+      const stops = net.patternStops[pattern];
+      const offsets = net.patternOffsets[pattern];
+      const gStart = net.groupStart[g];
+      const gScale = net.groupScale[g];
+      const dayTrips = day.trips[g];
+      const dayShift = day.shift[g];
+      const tripCount = dayTrips.length;
+      // Same arithmetic as departure(net, g, dayTrips[j], pos) - dayShift[j], with the trip's values kept
       let trip = -1;
+      let tripStart = 0;
+      let tripScale = 0;
+      let tripShift = 0;
       let boardStop = -1;
       let boardPos = -1;
       let boardOff = 0;
       for (let pos = start; pos < stops.length; pos++) {
         const s = stops[pos];
-        if (trip >= 0 && usable(s)) {
-          const arrive = at(net, day, g, trip, pos);
-          if (arrive < bestRide[s] && arrive < target) {
-            byRide[k][s] = arrive;
-            bestRide[s] = arrive;
-            p.rideGroup[k][s] = g;
-            p.rideTrip[k][s] = trip;
-            p.rideFrom[k][s] = boardStop;
-            p.rideFromPos[k][s] = boardPos;
-            p.rideToPos[k][s] = pos;
-            p.rideBoardedOff[k][s] = boardOff;
-            improved.add(s);
+        if (accessibleOnly && accessible[s] !== 1) continue;
+        const offset = offsets[pos];
+        let here = Infinity;
+        if (trip >= 0) {
+          here = tripStart + Math.round((offset * tripScale) / 10_000) - tripShift;
+          if (here < bestRide[s] && here < target) {
+            rideK[s] = here;
+            bestRide[s] = here;
+            pGroup[s] = g;
+            pTrip[s] = trip;
+            pFrom[s] = boardStop;
+            pFromPos[s] = boardPos;
+            pToPos[s] = pos;
+            pOff[s] = boardOff;
+            if (!improvedFlag[s]) {
+              improvedFlag[s] = 1;
+              improved[improvedCount++] = s;
+            }
           }
         }
-        if (!usable(s)) continue;
-        const r = ready(k - 1, s);
-        if (r.time < Infinity && (trip < 0 || r.time <= at(net, day, g, trip, pos))) {
-          const t = earliestTrip(net, day, g, pos, r.time);
-          if (t >= 0 && (trip < 0 || t < trip)) {
-            trip = t;
+        // When a rider who reached s in the previous round can board, and whether that is after getting off a vehicle
+        const walk = walkPrev[s];
+        const ride = ridePrev[s] + SAME_STOP_TRANSFER_S;
+        const ready = walk <= ride ? walk : ride;
+        if (ready < Infinity && (trip < 0 || ready <= here)) {
+          // Earliest trip leaving pos at or after `ready`. Only an earlier trip than the current one can
+          // change anything, and trips of a group never overtake each other: when the one before the
+          // current trip has already left, no earlier trip exists and the search is skipped.
+          let lo = 0;
+          let hi = tripCount;
+          if (trip >= 0) {
+            if (trip === 0) continue;
+            const j = dayTrips[trip - 1];
+            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[trip - 1] < ready) continue;
+            hi = trip - 1;
+          }
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            const j = dayTrips[mid];
+            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[mid] < ready) lo = mid + 1;
+            else hi = mid;
+          }
+          if (lo < tripCount && (trip < 0 || lo < trip)) {
+            trip = lo;
+            const j = dayTrips[lo];
+            tripStart = gStart[j];
+            tripScale = gScale[j];
+            tripShift = dayShift[lo];
             boardStop = s;
             boardPos = pos;
-            boardOff = r.off;
+            boardOff = walk <= ride ? 0 : 1;
           }
         }
       }
     }
 
     // One walk after getting off, never two
-    const walked = new Set<number>();
-    for (const s of improved) {
+    let walkedCount = 0;
+    for (let m = 0; m < improvedCount; m++) {
+      const s = improved[m];
       const w = net.walks[s];
+      const from = rideK[s];
       for (let i = 0; i < w.length; i += 2) {
         const to = w[i];
-        const arrive = byRide[k][s] + w[i + 1];
+        const arrive = from + w[i + 1];
         if (arrive < bestWalk[to] && arrive < bestRide[to] + SAME_STOP_TRANSFER_S && arrive < target && usable(to)) {
-          byWalk[k][to] = arrive;
+          walkK[to] = arrive;
           bestWalk[to] = arrive;
-          p.walkFrom[k][to] = s;
-          walked.add(to);
+          pWalk[to] = s;
+          if (!walkedFlag[to]) {
+            walkedFlag[to] = 1;
+            walked[walkedCount++] = to;
+          }
         }
       }
     }
@@ -235,8 +309,8 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
     let endOnFoot = false;
     for (const [s, walk] of egress) {
       // The last walk starts where the rider gets off: never after another walk (only at the origin stop with no vehicle at all)
-      const onFoot = byWalk[0][s] <= byRide[k][s];
-      const t = (onFoot ? byWalk[0][s] : byRide[k][s]) + walk;
+      const onFoot = byWalk[0][s] <= rideK[s];
+      const t = (onFoot ? byWalk[0][s] : rideK[s]) + walk;
       if (t < arrive) {
         arrive = t;
         end = s;
@@ -248,7 +322,27 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
       journeys.push(rebuild(net, day, q, k, end, endOnFoot, egress.get(end)!, byRide, byWalk, p));
     }
 
-    marked = new Set([...improved, ...walked]);
+    // Next round: the stops improved by a vehicle, then those reached on foot, each once
+    for (let m = 0; m < markedCount; m++) markedFlag[marked[m]] = 0;
+    const next = spare;
+    let nextCount = 0;
+    for (let m = 0; m < improvedCount; m++) {
+      const s = improved[m];
+      improvedFlag[s] = 0;
+      markedFlag[s] = 1;
+      next[nextCount++] = s;
+    }
+    for (let m = 0; m < walkedCount; m++) {
+      const s = walked[m];
+      walkedFlag[s] = 0;
+      if (!markedFlag[s]) {
+        markedFlag[s] = 1;
+        next[nextCount++] = s;
+      }
+    }
+    spare = marked;
+    marked = next;
+    markedCount = nextCount;
   }
   return journeys;
 }

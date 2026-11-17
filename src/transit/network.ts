@@ -72,24 +72,69 @@ export interface Network {
 const CELL = 0.005;
 const cellKey = (lat: number, lon: number) => Math.floor(lat / CELL) * 100_000 + Math.floor(lon / CELL);
 
+// Plain loops instead of Array.from/forEach/map with callbacks: the app runs this on Hermes, which has no
+// JIT to inline a callback per element, and the network has ~8,300 stops and ~2,700 groups.
+const toInt32 = (lists: number[][]): Int32Array[] => {
+  const out: Int32Array[] = new Array(lists.length);
+  for (let i = 0; i < lists.length; i++) out[i] = new Int32Array(lists[i]);
+  return out;
+};
+
 export function decodeNetwork(file: NetworkFile): Network {
   if (file.version !== NETWORK_VERSION) throw new Error(`Network file v${file.version}, expected v${NETWORK_VERSION}.`);
   const n = file.stops.id.length;
-  const lat = Float64Array.from(file.stops.lat, (v) => v / 1e6);
-  const lon = Float64Array.from(file.stops.lon, (v) => v / 1e6);
+  const lat = new Float64Array(n);
+  const lon = new Float64Array(n);
+  for (let s = 0; s < n; s++) {
+    lat[s] = file.stops.lat[s] / 1e6;
+    lon[s] = file.stops.lon[s] / 1e6;
+  }
 
-  const stopGroupLists: number[][] = Array.from({ length: n }, () => []);
-  file.groups.pattern.forEach((p, g) => {
-    file.patterns.stops[p].forEach((s, pos) => stopGroupLists[s].push(g, pos));
-  });
+  // stop -> [group, position] pairs: count first, then fill, so each stop gets one exact-size array
+  const groupPattern = file.groups.pattern;
+  const patternStops = file.patterns.stops;
+  const groupCounts = new Int32Array(n);
+  for (let g = 0; g < groupPattern.length; g++) {
+    const stops = patternStops[groupPattern[g]];
+    for (let pos = 0; pos < stops.length; pos++) groupCounts[stops[pos]] += 2;
+  }
+  const stopGroups: Int32Array[] = new Array(n);
+  for (let s = 0; s < n; s++) stopGroups[s] = new Int32Array(groupCounts[s]);
+  const groupFill = new Int32Array(n);
+  for (let g = 0; g < groupPattern.length; g++) {
+    const stops = patternStops[groupPattern[g]];
+    for (let pos = 0; pos < stops.length; pos++) {
+      const s = stops[pos];
+      const at = groupFill[s];
+      stopGroups[s][at] = g;
+      stopGroups[s][at + 1] = pos;
+      groupFill[s] = at + 2;
+    }
+  }
 
-  const walkLists: number[][] = Array.from({ length: n }, () => []);
-  file.footpaths.from.forEach((a, i) => {
-    const b = file.footpaths.to[i];
-    const s = file.footpaths.seconds[i];
-    walkLists[a].push(b, s);
-    walkLists[b].push(a, s);
-  });
+  // stop -> [to, seconds] pairs, both directions, in footpath order
+  const { from, to, seconds } = file.footpaths;
+  const walkCounts = new Int32Array(n);
+  for (let i = 0; i < from.length; i++) {
+    walkCounts[from[i]] += 2;
+    walkCounts[to[i]] += 2;
+  }
+  const walks: Int32Array[] = new Array(n);
+  for (let s = 0; s < n; s++) walks[s] = new Int32Array(walkCounts[s]);
+  const walkFill = new Int32Array(n);
+  for (let i = 0; i < from.length; i++) {
+    const a = from[i];
+    const b = to[i];
+    const sec = seconds[i];
+    let at = walkFill[a];
+    walks[a][at] = b;
+    walks[a][at + 1] = sec;
+    walkFill[a] = at + 2;
+    at = walkFill[b];
+    walks[b][at] = a;
+    walks[b][at + 1] = sec;
+    walkFill[b] = at + 2;
+  }
 
   const grid = new Map<number, number[]>();
   for (let s = 0; s < n; s++) {
@@ -99,6 +144,9 @@ export function decodeNetwork(file: NetworkFile): Network {
     else grid.set(key, [s]);
   }
 
+  const stopIndex = new Map<string, number>();
+  for (let s = 0; s < n; s++) stopIndex.set(file.stops.id[s], s);
+
   return {
     asOf: file.asOf,
     stopCount: n,
@@ -107,24 +155,24 @@ export function decodeNetwork(file: NetworkFile): Network {
     stopCode: file.stops.code,
     lat,
     lon,
-    parent: Int32Array.from(file.stops.parent),
+    parent: new Int32Array(file.stops.parent),
     kind: file.stops.kind,
-    accessible: Uint8Array.from(file.stops.accessible),
+    accessible: new Uint8Array(file.stops.accessible),
     routeId: file.routes.id,
     routeShort: file.routes.short,
     routeLong: file.routes.long,
     agency: file.routes.agency,
     services: file.services,
-    patternRoute: Int32Array.from(file.patterns.route),
-    patternStops: file.patterns.stops.map((s) => Int32Array.from(s)),
-    patternOffsets: file.patterns.offsets.map((o) => Int32Array.from(o)),
-    groupPattern: Int32Array.from(file.groups.pattern),
-    groupStart: file.groups.start.map((s) => Int32Array.from(s)),
-    groupScale: file.groups.scale.map((s) => Int32Array.from(s)),
-    groupService: file.groups.service.map((s) => Int32Array.from(s)),
-    stopGroups: stopGroupLists.map((l) => Int32Array.from(l)),
-    walks: walkLists.map((l) => Int32Array.from(l)),
-    stopIndex: new Map(file.stops.id.map((id, i) => [id, i])),
+    patternRoute: new Int32Array(file.patterns.route),
+    patternStops: toInt32(patternStops),
+    patternOffsets: toInt32(file.patterns.offsets),
+    groupPattern: new Int32Array(groupPattern),
+    groupStart: toInt32(file.groups.start),
+    groupScale: toInt32(file.groups.scale),
+    groupService: toInt32(file.groups.service),
+    stopGroups,
+    walks,
+    stopIndex,
     grid,
   };
 }

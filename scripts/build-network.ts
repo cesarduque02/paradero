@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { MAX_ERROR_S, NETWORK_VERSION, type NetworkFile, type StopKind } from "../src/transit/network.ts";
+import { MAX_ERROR_S, NETWORK_VERSION, networkProblems, type NetworkFile, type StopKind } from "../src/transit/network.ts";
 
 const HUB = "https://datosabiertos-transmilenio.hub.arcgis.com/api/search/v1/collections/all/items?q=gtfs&limit=100";
 const ITEM = (id: string) => `https://www.arcgis.com/sharing/rest/content/items/${id}?f=json`;
@@ -379,6 +379,8 @@ async function main() {
     groups: out.groups,
     footpaths: fp,
   };
+  const problems = networkProblems(file);
+  if (problems.length) throw new Error(`The network breaks what the planner relies on:\n${problems.join("\n")}`);
   mkdirSync("public/network", { recursive: true });
   const json = JSON.stringify(file);
   writeFileSync(arg("out") ?? OUT, json);

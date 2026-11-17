@@ -129,6 +129,45 @@ export function decodeNetwork(file: NetworkFile): Network {
   };
 }
 
+/**
+ * What the planner relies on in a network file, beyond its shape. The FIFO groups of
+ * scripts/build-network.ts are only FIFO at every stop when offsets never decrease and scales are not
+ * negative. RAPTOR's binary search and its shortcuts (skipping searches, pruning by the best arrival)
+ * also need the day's list in order, and that list puts yesterday's trips past midnight (minus 24 h)
+ * before today's: so no such trip may leave after the group's first trip, whatever the calendar.
+ * Returns one line per broken rule, at most `limit`; empty when the file is sound.
+ */
+export function networkProblems(file: NetworkFile, limit = 20): string[] {
+  const out: string[] = [];
+  const say = (line: string) => out.length < limit && out.push(line);
+  const { offsets } = file.patterns;
+  for (let p = 0; p < offsets.length; p++) {
+    const o = offsets[p];
+    if (o.length !== file.patterns.stops[p].length) say(`pattern ${p}: ${o.length} offsets for ${file.patterns.stops[p].length} stops`);
+    if (o.length && o[0] < 0) say(`pattern ${p}: first offset ${o[0]} is negative`);
+    for (let i = 1; i < o.length; i++) if (o[i] < o[i - 1]) say(`pattern ${p}: offset ${i} (${o[i]}) is before offset ${i - 1} (${o[i - 1]})`);
+  }
+  const { pattern, start, scale } = file.groups;
+  for (let g = 0; g < pattern.length; g++) {
+    const total = offsets[pattern[g]][offsets[pattern[g]].length - 1] ?? 0;
+    if (start[g].length !== scale[g].length || start[g].length !== file.groups.service[g].length) say(`group ${g}: start, scale and service differ in length`);
+    for (let k = 0; k < scale[g].length; k++) {
+      // A trip past midnight runs again tomorrow, 24 h earlier, ahead of the group's first trip of that day
+      // (dayTimetable decides "past midnight" after rounding, hence the half second)
+      if (start[g][k] * 10_000 + total * scale[g][k] >= 86_400 * 10_000 - 5_000 &&
+        (start[g][k] - 86_400 > start[g][0] || (start[g][k] - 86_400) * 10_000 + total * scale[g][k] > start[g][0] * 10_000 + total * scale[g][0]))
+        say(`group ${g}: trip ${k} runs past midnight and, 24 h earlier, would leave after trip 0`);
+      if (scale[g][k] < 0) say(`group ${g}, trip ${k}: scale ${scale[g][k]} is negative`);
+      // The scan rounds offset × scale / 10 000 with 32-bit integers
+      if (start[g][k] + 86_400 + (total * scale[g][k]) / 10_000 >= 2 ** 31) say(`group ${g}, trip ${k}: times overflow 32 bits`);
+      // FIFO at the first and last stop, which with the rules above means at every stop
+      if (k > 0 && (start[g][k] < start[g][k - 1] || start[g][k] * 10_000 + total * scale[g][k] < start[g][k - 1] * 10_000 + total * scale[g][k - 1]))
+        say(`group ${g}: trip ${k} overtakes trip ${k - 1}`);
+    }
+  }
+  return out;
+}
+
 /** Metres between two points, equirectangular: exact enough inside one city. */
 export function metres(aLat: number, aLon: number, bLat: number, bLon: number): number {
   const x = (bLon - aLon) * 111_320 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));

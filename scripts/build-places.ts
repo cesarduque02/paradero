@@ -94,12 +94,21 @@ type Element = {
 async function overpass(query: string, cache: string): Promise<Element[]> {
   const dir = arg("osm-dir");
   if (dir && existsSync(join(dir, cache))) return (JSON.parse(readFileSync(join(dir, cache), "utf8")) as { elements: Element[] }).elements;
-  const res = await fetch(OVERPASS, {
-    method: "POST",
-    headers: { "User-Agent": "paradero-build (github.com/croma-labs/paradero)", "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ data: query }),
-  });
-  if (!res.ok) throw new Error(`Overpass answered ${res.status}`);
+  // The public Overpass servers are busy at times: a deploy should wait a little, not fail at the first 502
+  let res: Response | null = null;
+  for (const wait of [0, 15_000, 45_000]) {
+    if (wait) {
+      console.log(`Overpass answered ${res?.status}; trying again in ${wait / 1000} s`);
+      await new Promise((done) => setTimeout(done, wait));
+    }
+    res = await fetch(OVERPASS, {
+      method: "POST",
+      headers: { "User-Agent": "paradero-build (github.com/croma-labs/paradero)", "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ data: query }),
+    });
+    if (res.ok || (res.status !== 429 && res.status < 500)) break;
+  }
+  if (!res || !res.ok) throw new Error(`Overpass answered ${res?.status}`);
   const text = await res.text();
   if (dir) {
     mkdirSync(dir, { recursive: true });

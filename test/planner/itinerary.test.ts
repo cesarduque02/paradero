@@ -29,6 +29,18 @@ describe("options", () => {
     assert.ok(found.every((o) => problems(net, o.journey, point(STOP.A), point(STOP.E)).length === 0));
   });
 
+  it("shows the next bus of the same route, not just the first one", () => {
+    // R1 leaves A at 7:00 and 7:10; both reach C
+    const found = options(net, day, point(STOP.A), point(STOP.C), T(6, 55));
+    assert.deepEqual(
+      found.map((o) => [o.reason, o.journey.legs.find((l) => l.kind === "ride")!.departs]),
+      [
+        ["fastest", T(7, 0)],
+        ["next_departure", T(7, 10)],
+      ],
+    );
+  });
+
   it("returns nothing when there is no stop near the point", () => {
     assert.deepEqual(options(net, day, { lat: 4.3, lon: -74.5 }, point(STOP.E), T(7, 0)), []);
   });

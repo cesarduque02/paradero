@@ -108,7 +108,7 @@ Anything written after the address is kept. Apartment details are ignored. Anoth
 
 **The confirmation contract.** Every candidate carries its barrio, the nearest TransMilenio station and the nearest SITP stop, so a rider can recognise it.
 - **Signed ids.** Ids leave the server signed with HMAC-SHA-256 (`PARADERO_PLACE_SECRET`, or a key derived from `CROMA_API_KEY`). `/api/plan` and `plan_trip` refuse any other id, and resolve the signed one again on the server, so an assistant cannot plan from a place it made up.
-- **Device locations.** These go through `resolve_place` as `geo:lat,lon`. They are rounded to 4 decimals, and are refused outside Bogotá D.C. or more than 1.5 km from any stop. The MCP instructions tell assistants to:
+- **Device locations.** These go through `resolve_place` as `geo:lat,lon`. They are rounded to 3 decimals (about a block), like the app rounds a phone's location, and are refused outside Bogotá D.C. or more than 1.5 km from any stop. The MCP instructions tell assistants to:
 - read every end back and get a yes before planning;
 - ask when there are several candidates, an approximate one or a note;
 - never plan from what they know of Bogotá.

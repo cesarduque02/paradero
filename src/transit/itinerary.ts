@@ -162,7 +162,8 @@ export function options(net: Network, day: DayTimetable, from: Point, to: Point,
   const found: Option[] = [];
   const seen = new Set<string>();
   const add = (j: Journey, reason: Option["reason"]) => {
-    const key = signature(net, j);
+    // Same routes on a later bus is a different option: the next one
+    const key = `${signature(net, j)}@${rides(j)[0].departs}`;
     if (seen.has(key) || found.length >= limit + 2) return;
     seen.add(key);
     found.push({ journey: j, reason, walkMetres: walkedMetres(net, j, from, to) });

@@ -410,8 +410,9 @@ export function resolve(net: Network, p: Places, input: string): Resolved {
   const text = input.trim();
   const geo = /^geo:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/.exec(text);
   if (geo) {
-    const lat = Number(Number(geo[1]).toFixed(4));
-    const lon = Number(Number(geo[2]).toFixed(4));
+    // Rounded like the app rounds a phone's location (AGENTS.md): about a block
+    const lat = Number(Number(geo[1]).toFixed(3));
+    const lon = Number(Number(geo[2]).toFixed(3));
     if (!inBogota(lat, lon)) return { error: "Ese punto no está en Bogotá." };
     if (!stopsNear(net, lat, lon, 1500).some((x) => net.stopGroups[x.stop].length)) return { error: "Ese punto está a más de 1,5 km de cualquier estación o paradero." };
     return { candidates: [{ id: `geo:${lat},${lon}`, label: "Tu ubicación", kind: "ubicación", lat, lon, confidence: "exact", near: describe(net, p, lat, lon) }] };

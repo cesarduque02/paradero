@@ -44,6 +44,8 @@ describe("parseAddress", () => {
     assert.equal(a.extra, "surtimax");
     assert.equal(streetKey(parseAddress("Carrera 7 # 72-41 Esteban")!.primary), "KR 7");
     assert.equal(parseAddress("Calle 72 # 10-34 apto 301")!.extra, "");
+    assert.equal(parseAddress("Calle 72 # 10-34 Apto 301 Chía")!.extra, "chia");
+    assert.equal(parseAddress("Calle 72 # 10-34 torre 2 apto 301")!.extra, "");
     assert.equal(parseAddress("Calle 72 # 10-34 y Calle 80 # 15-20")!.extra, "y calle 80 # 15-20");
   });
 
@@ -157,7 +159,7 @@ describe("resolve", () => {
 
   it("rounds a device location before using it", () => {
     const r = resolve(net, places, "geo:4.6412345,-74.0901234");
-    assert.ok("candidates" in r && r.candidates[0].id === "geo:4.6412,-74.0901");
+    assert.ok("candidates" in r && r.candidates[0].id === "geo:4.641,-74.09");
   });
 
   it("puts the famous place first and is sure of it", () => {
@@ -169,6 +171,13 @@ describe("resolve", () => {
   it("refuses a device location far from every stop", () => {
     const r = resolve(net, places, "geo:4.45,-74.15");
     assert.ok("error" in r && r.error.includes("1,5 km"));
+  });
+
+  it("sees the municipality after an apartment or a tower", () => {
+    for (const q of ["Calle 72 # 10-34 Apto 301 Chía", "Calle 72 # 10-34 Torre 2 Soacha", "Calle 72 # 10-34, torre 2 apto 301, Zipaquirá"]) {
+      const r = resolve(net, places, q);
+      assert.ok("error" in r && r.error.includes("Bogotá D.C."), q);
+    }
   });
 
   it("refuses an address in another municipality instead of placing it in Bogotá", () => {

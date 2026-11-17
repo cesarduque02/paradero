@@ -137,9 +137,14 @@ export function parseAddress(input: string): Address | null {
   return { primary, cross, placa: plate ? Number(plate[3]) : null, extra: plate ? extraOf(rest.slice(plate[0].length)) : "" };
 }
 
+/** What follows an address, minus "apto 301", "torre 2"… The rest ("Chía") is kept, never hidden behind them. */
 function extraOf(text: string): string {
-  const t = text.replace(/^[\s,;.-]+/, "").trim();
-  return !t || COMPLEMENT.test(t) ? "" : t;
+  let t = text.replace(/^[\s,;.-]+/, "").trim();
+  for (let m = COMPLEMENT.exec(t); m; m = COMPLEMENT.exec(t)) {
+    // The building word and its value ("301", "2", "b", "2-301")
+    t = t.slice(m[0].length).replace(/^\s*(?:no\s*|#\s*)?[a-z0-9-]{1,8}\b/, "").replace(/^[\s,;.-]+/, "").trim();
+  }
+  return t;
 }
 
 export function describeStreet(s: Street): string {

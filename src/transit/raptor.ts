@@ -230,7 +230,9 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
       const offsets = net.patternOffsets[pattern];
       const dayStart = day.start[g];
       const dayScale = day.scale[g];
-      // Same value as departure(net, g, dayTrips[j], pos) - day.shift[g][j], read from the day's own arrays
+      // Same value as departure(net, g, dayTrips[j], pos) - day.shift[g][j], read from the day's own arrays.
+      // ((offset × scale + 5 000) / 10 000) | 0 is Math.round(offset × scale / 10 000) without a call per stop:
+      // equal for every product ≥ 0 whose result fits 32 bits, which networkProblems() checks when the file is built.
       let trip = -1;
       let tripStart = 0;
       let tripScale = 0;
@@ -243,7 +245,7 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
         const offset = offsets[pos];
         let here = Infinity;
         if (trip >= 0) {
-          here = tripStart + Math.round((offset * tripScale) / 10_000);
+          here = tripStart + (((offset * tripScale + 5_000) / 10_000) | 0);
           if (here < rideK[s] && here < target) {
             rideK[s] = here;
             pGroup[s] = g;
@@ -274,15 +276,15 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
           let hi = tripCount;
           if (trip >= 0) {
             if (trip === 0) continue;
-            if (dayStart[trip - 1] + Math.round((offset * dayScale[trip - 1]) / 10_000) < ready) continue;
+            if (dayStart[trip - 1] + (((offset * dayScale[trip - 1] + 5_000) / 10_000) | 0) < ready) continue;
             hi = trip - 1;
           } else {
             // Not on a trip yet: when the group's last trip has already left, no trip is left today
-            if (dayStart[tripCount - 1] + Math.round((offset * dayScale[tripCount - 1]) / 10_000) < ready) continue;
+            if (dayStart[tripCount - 1] + (((offset * dayScale[tripCount - 1] + 5_000) / 10_000) | 0) < ready) continue;
           }
           while (lo < hi) {
             const mid = (lo + hi) >> 1;
-            if (dayStart[mid] + Math.round((offset * dayScale[mid]) / 10_000) < ready) lo = mid + 1;
+            if (dayStart[mid] + (((offset * dayScale[mid] + 5_000) / 10_000) | 0) < ready) lo = mid + 1;
             else hi = mid;
           }
           if (lo < tripCount && (trip < 0 || lo < trip)) {

@@ -20,6 +20,10 @@ export interface DayTimetable {
   trips: Int32Array[];
   /** Per group, per entry in `trips`: seconds to subtract (86 400 for yesterday's trips past midnight). */
   shift: Int32Array[];
+  /** Per group, per entry in `trips`: the trip's start minus its shift, so the scan reads one array, not three. */
+  start: Int32Array[];
+  /** Per group, per entry in `trips`: the trip's scale over the pattern's offsets. */
+  scale: Int32Array[];
 }
 
 export interface Endpoint {
@@ -78,6 +82,8 @@ export function dayTimetable(net: Network, today: Set<number>, yesterday: Set<nu
   const groups = net.groupPattern.length;
   const trips: Int32Array[] = new Array(groups);
   const shift: Int32Array[] = new Array(groups);
+  const dayStart: Int32Array[] = new Array(groups);
+  const dayScale: Int32Array[] = new Array(groups);
   for (let g = 0; g < groups; g++) {
     const service = net.groupService[g];
     const count = net.groupStart[g].length;
@@ -101,10 +107,18 @@ export function dayTimetable(net: Network, today: Set<number>, yesterday: Set<nu
     for (let k = 0; k < count; k++) {
       if (runsToday[service[k]]) t[i++] = k;
     }
+    const ds = new Int32Array(n);
+    const dc = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      ds[i] = start[t[i]] - s[i];
+      dc[i] = scale[t[i]];
+    }
     trips[g] = t;
     shift[g] = s;
+    dayStart[g] = ds;
+    dayScale[g] = dc;
   }
-  return { trips, shift };
+  return { trips, shift, start: dayStart, scale: dayScale };
 }
 
 const at = (net: Network, day: DayTimetable, g: number, j: number, pos: number) => departure(net, g, day.trips[g][j], pos) - day.shift[g][j];
@@ -214,14 +228,12 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
       const pattern = net.groupPattern[g];
       const stops = net.patternStops[pattern];
       const offsets = net.patternOffsets[pattern];
-      const gStart = net.groupStart[g];
-      const gScale = net.groupScale[g];
-      const dayShift = day.shift[g];
-      // Same arithmetic as departure(net, g, dayTrips[j], pos) - dayShift[j], with the trip's values kept
+      const dayStart = day.start[g];
+      const dayScale = day.scale[g];
+      // Same value as departure(net, g, dayTrips[j], pos) - day.shift[g][j], read from the day's own arrays
       let trip = -1;
       let tripStart = 0;
       let tripScale = 0;
-      let tripShift = 0;
       let boardStop = -1;
       let boardPos = -1;
       let boardOff = 0;
@@ -231,7 +243,7 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
         const offset = offsets[pos];
         let here = Infinity;
         if (trip >= 0) {
-          here = tripStart + Math.round((offset * tripScale) / 10_000) - tripShift;
+          here = tripStart + Math.round((offset * tripScale) / 10_000);
           if (here < rideK[s] && here < target) {
             rideK[s] = here;
             pGroup[s] = g;
@@ -262,26 +274,21 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
           let hi = tripCount;
           if (trip >= 0) {
             if (trip === 0) continue;
-            const j = dayTrips[trip - 1];
-            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[trip - 1] < ready) continue;
+            if (dayStart[trip - 1] + Math.round((offset * dayScale[trip - 1]) / 10_000) < ready) continue;
             hi = trip - 1;
           } else {
             // Not on a trip yet: when the group's last trip has already left, no trip is left today
-            const j = dayTrips[tripCount - 1];
-            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[tripCount - 1] < ready) continue;
+            if (dayStart[tripCount - 1] + Math.round((offset * dayScale[tripCount - 1]) / 10_000) < ready) continue;
           }
           while (lo < hi) {
             const mid = (lo + hi) >> 1;
-            const j = dayTrips[mid];
-            if (gStart[j] + Math.round((offset * gScale[j]) / 10_000) - dayShift[mid] < ready) lo = mid + 1;
+            if (dayStart[mid] + Math.round((offset * dayScale[mid]) / 10_000) < ready) lo = mid + 1;
             else hi = mid;
           }
           if (lo < tripCount && (trip < 0 || lo < trip)) {
             trip = lo;
-            const j = dayTrips[lo];
-            tripStart = gStart[j];
-            tripScale = gScale[j];
-            tripShift = dayShift[lo];
+            tripStart = dayStart[lo];
+            tripScale = dayScale[lo];
             boardStop = s;
             boardPos = pos;
             boardOff = walk <= ride ? 0 : 1;

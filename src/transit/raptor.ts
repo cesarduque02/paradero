@@ -268,7 +268,9 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
         const walk = walkPrev[s];
         const ride = ridePrev[s] + SAME_STOP_TRANSFER_S;
         const ready = walk <= ride ? walk : ride;
-        if (ready < Infinity && (trip < 0 || ready <= here)) {
+        // Boarding at `ready` or later reaches every later stop no sooner than `ready` (offsets never go back and
+        // scales are not negative, see networkProblems), so from `target` on it cannot improve anything.
+        if (ready < target && (trip < 0 || ready <= here)) {
           // Earliest trip leaving pos at or after `ready`. Only an earlier trip than the current one can
           // change anything, and trips of a group never overtake each other: when the one before the
           // current trip has already left, no earlier trip exists and the search is skipped.

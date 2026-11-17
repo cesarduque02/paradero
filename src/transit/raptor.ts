@@ -136,11 +136,10 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
     p.rideBoardedOff.push(new Uint8Array(n));
     p.walkFrom.push(new Int32Array(n).fill(NONE));
   }
-  const bestRide = new Float64Array(n).fill(Infinity);
-  const bestWalk = new Float64Array(n).fill(Infinity);
-
   const egress = new Map<number, number>();
   for (const e of q.destination) if (usable(e.stop)) egress.set(e.stop, Math.min(e.walk, egress.get(e.stop) ?? Infinity));
+  const egressStop = Int32Array.from(egress.keys());
+  const egressWalk = Float64Array.from(egress.values());
 
   // Sets of stops as a flag per stop plus a list in insertion order: same order a Set would iterate in,
   // without allocating one per round (Hermes has no JIT to remove that cost).
@@ -158,7 +157,6 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
     const t = q.departAt + o.walk;
     if (t < byWalk[0][o.stop]) {
       byWalk[0][o.stop] = t;
-      bestWalk[o.stop] = t;
       if (!markedFlag[o.stop]) {
         markedFlag[o.stop] = 1;
         marked[markedCount++] = o.stop;
@@ -173,12 +171,14 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
 
   const journeys: Journey[] = [];
   let target = Infinity;
+  const walkOrigin = byWalk[0];
 
   for (let k = 1; k <= rounds && markedCount; k++) {
     const rideK = byRide[k];
     const walkK = byWalk[k];
     const ridePrev = byRide[k - 1];
     const walkPrev = byWalk[k - 1];
+    // Each round starts from the previous one, so rideK and walkK are also the best arrival found so far
     rideK.set(ridePrev);
     walkK.set(walkPrev);
     const pGroup = p.rideGroup[k];
@@ -208,14 +208,15 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
       const g = queue[qi];
       const start = queuePos[g];
       queuePos[g] = -1;
+      const dayTrips = day.trips[g];
+      const tripCount = dayTrips.length;
+      if (tripCount === 0) continue; // the group does not run on this day
       const pattern = net.groupPattern[g];
       const stops = net.patternStops[pattern];
       const offsets = net.patternOffsets[pattern];
       const gStart = net.groupStart[g];
       const gScale = net.groupScale[g];
-      const dayTrips = day.trips[g];
       const dayShift = day.shift[g];
-      const tripCount = dayTrips.length;
       // Same arithmetic as departure(net, g, dayTrips[j], pos) - dayShift[j], with the trip's values kept
       let trip = -1;
       let tripStart = 0;
@@ -231,9 +232,8 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
         let here = Infinity;
         if (trip >= 0) {
           here = tripStart + Math.round((offset * tripScale) / 10_000) - tripShift;
-          if (here < bestRide[s] && here < target) {
+          if (here < rideK[s] && here < target) {
             rideK[s] = here;
-            bestRide[s] = here;
             pGroup[s] = g;
             pTrip[s] = trip;
             pFrom[s] = boardStop;
@@ -246,6 +246,10 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
             }
           }
         }
+        // Boarding is only tried where the previous round improved something. At any other stop the same
+        // boarding was already tried when the stop was last improved, and it reached every later stop of the
+        // group no sooner than what is recorded now (labels and target only go down), so it changes nothing.
+        if (!markedFlag[s]) continue;
         // When a rider who reached s in the previous round can board, and whether that is after getting off a vehicle
         const walk = walkPrev[s];
         const ride = ridePrev[s] + SAME_STOP_TRANSFER_S;
@@ -291,9 +295,8 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
       for (let i = 0; i < w.length; i += 2) {
         const to = w[i];
         const arrive = from + w[i + 1];
-        if (arrive < bestWalk[to] && arrive < bestRide[to] + SAME_STOP_TRANSFER_S && arrive < target && usable(to)) {
+        if (arrive < target && arrive < walkK[to] && arrive < rideK[to] + SAME_STOP_TRANSFER_S && (!accessibleOnly || accessible[to] === 1)) {
           walkK[to] = arrive;
-          bestWalk[to] = arrive;
           pWalk[to] = s;
           if (!walkedFlag[to]) {
             walkedFlag[to] = 1;
@@ -307,19 +310,22 @@ export function raptor(net: Network, day: DayTimetable, q: Query): Journey[] {
     let arrive = Infinity;
     let end = -1;
     let endOnFoot = false;
-    for (const [s, walk] of egress) {
+    let endWalk = 0;
+    for (let i = 0; i < egressStop.length; i++) {
+      const s = egressStop[i];
       // The last walk starts where the rider gets off: never after another walk (only at the origin stop with no vehicle at all)
-      const onFoot = byWalk[0][s] <= rideK[s];
-      const t = (onFoot ? byWalk[0][s] : rideK[s]) + walk;
+      const onFoot = walkOrigin[s] <= rideK[s];
+      const t = (onFoot ? walkOrigin[s] : rideK[s]) + egressWalk[i];
       if (t < arrive) {
         arrive = t;
         end = s;
         endOnFoot = onFoot;
+        endWalk = egressWalk[i];
       }
     }
     if (end >= 0 && arrive < target) {
       target = arrive;
-      journeys.push(rebuild(net, day, q, k, end, endOnFoot, egress.get(end)!, byRide, byWalk, p));
+      journeys.push(rebuild(net, day, q, k, end, endOnFoot, endWalk, byRide, byWalk, p));
     }
 
     // Next round: the stops improved by a vehicle, then those reached on foot, each once

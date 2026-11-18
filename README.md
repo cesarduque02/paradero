@@ -107,6 +107,8 @@ Paradero también habla [MCP](https://modelcontextprotocol.io), el protocolo abi
 
 Son las mismas funciones y reglas de caché que usa la app, solo de lectura y sin cuenta. Las respuestas dicen si cada hora es en vivo o del horario, y el asistente recibe la instrucción de decirlo. Las coordenadas se redondean a una cuadra antes de consultar.
 
+Es para pasajeros: sin cuenta y con un límite por dirección IP. Para construir sobre los datos crudos de TransMilenio o sobre las demás fuentes de Croma, usa el [conector oficial de Croma](https://docs.usecroma.com/mcp-server) con tu cuenta.
+
 ## Lo que sigue
 
 - **Pregúntale a Paradero:** modo agente en lenguaje natural ("¿cómo llego a la Nacional?") que responde con datos en vivo y las mismas tarjetas de la app.

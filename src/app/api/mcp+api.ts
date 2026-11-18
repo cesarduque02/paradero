@@ -3,11 +3,31 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 
 import { mcpServer } from "@/server/mcp";
 
+/**
+ * Messages per address per minute. A rider's conversation takes a handful; this stops anyone using
+ * Paradero as a free way into Croma's data. Kept per server instance, like the report limit.
+ */
+const PER_MINUTE = 120;
+const recent = new Map<string, number[]>();
+
+function allow(client: string): boolean {
+  const now = Date.now();
+  const hits = (recent.get(client) ?? []).filter((t) => now - t < 60_000);
+  const ok = hits.length < PER_MINUTE;
+  if (ok) hits.push(now);
+  recent.set(client, hits);
+  if (recent.size > 5_000) recent.delete(recent.keys().next().value as string);
+  return ok;
+}
+
 function rpcError(status: number, code: number, message: string, headers?: HeadersInit) {
   return Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status, headers });
 }
 
 export async function POST(request: Request) {
+  const client = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "local";
+  if (!allow(client)) return rpcError(429, -32000, "Too many requests from this address. Try again in a minute.", { "Retry-After": "60" });
+
   const body = await readRequestBody(request);
   if (body.tooLarge) return rpcError(413, -32000, "Request body too large.");
   let message: unknown;
